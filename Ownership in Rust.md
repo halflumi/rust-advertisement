@@ -31,6 +31,8 @@ This behavior prohibits the *double free* problem mostly seen prior to smart poi
 
 ### Borrow Check
 
+In Rust, a value is borrowed if something else has a reference to it or into it (a reference to a field of a struct or to an element of a collection).
+
 The borrow check mechanism in Rust is summarized in *the Book* as follow:
 
 > At any given time, you can have *either* (but not both of) one mutable reference or any number of immutable references.
@@ -83,7 +85,7 @@ error[E0502]: cannot borrow `x` as immutable because it is also borrowed as muta
   |                    -- mutable borrow later used here
 ```
 
-These restrictions are casted to prevent *data races*. More interestingly, since the compiler would preserve the validity of all references, this won't compile as well:
+These restrictions are casted to prevent *data races*. More interestingly, following code won't compile as well:
 
 ```rust
 {
@@ -106,7 +108,13 @@ error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immuta
   |                    ----- immutable borrow later used here
 ```
 
-The reason is that the memory of vector might get re-allocated after push operation which renders the immutable reference `first` invalid.
+The undelaying cause is `push` method of `vec` takes a mutable reference of it:
+
+```rust
+pub fn push(&mut self, value: T) {...}
+```
+
+Reason behind this error is that the memory of vector might get re-allocated after push operation which renders the immutable reference `first` invalid.
 
 ## Memory Safety in Rust
 
