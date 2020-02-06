@@ -4,7 +4,7 @@
 
 Ownership in Rust enforces that every value in Rust has and only has one owner variable, and when the owner goes out of scope, the value will be freed.
 
-This holds true for both the good old value type that lies wholly on the stack and the dynamically allocated pointer which consists of data on the heap. The value type acts just like how they are in C:
+This holds true for both the good old value type that lies wholly on the stack and the dynamically allocated pointer type which consists of data on the heap. The value type acts just like how they are in C:
 
 ```rust
 {
@@ -27,7 +27,7 @@ let s1 = String::from("hello");
 let s2 = s1; // s1 is invalidated post this point. the ownership is transferred
 ```
 
-This behavior prohibits the *double free* problem mostly seen prior to smart pointers in C++.
+This behavior prohibits the *double free* problem mostly seen in C/C++ (prior to smart pointers in C++).
 
 ### Borrow Check
 
@@ -39,7 +39,7 @@ The borrow check mechanism in Rust is summarized in *the Book* as follow:
 >
 > References must always be valid.
 
-Firstly it implies two mutable references cannot exist at the same time:
+Firstly it implies two or more mutable references cannot exist at the same time:
 
 ```rust
 {
@@ -423,10 +423,120 @@ Although *data races* are not hard to solve, I'd wage life in Rust is easier for
 
 
 
-## Rust中的所有权模型
+## Rust中的所有权
 
-Rust的所有权，简单来说，就是在Rust中的每一份数据都为一个变量唯一持有，且当变量生命周期结束时，数据会被释放。
+### 一般行为
 
-这意味着不论是全都在栈上的值类型还是
+Rust的所有权，就是在Rust中的每一份数据都为一个变量唯一持有，且当变量生命周期结束时，数据会被释放。
 
-（中文翻译太难了，中文版推迟）
+这对全在栈上的值类型和包含堆数据的指针类型来说都是成立的。值类型的行为就和C语言一样：
+
+```rust
+{
+  let i = 1;
+} // i在这出栈
+```
+
+包含指针的结构体遵循C++中的“资源获取就是初始化”（RAII, Resource Acquisition Is Initialization）模式，在变量生命周期结束时会析构：
+
+```rust
+{
+  let s = String::from("hello");
+} // drop(s)被调用，堆上的"hello"被释放
+```
+
+Rust的所有权规则还指明了Rust的移动语义。赋值语句在Rust中默认为移动操作而非拷贝操作：
+
+```rust
+let s1 = String::from("hello");
+let s2 = s1; // s1在赋值语句执行后失效，所有权转移给s2
+```
+
+这种行为防止了在C/C++（在C++引入智能指针之前）中多见的”多次释放“的内存安全问题。
+
+### 借用检查
+
+在Rust中，如果一个变量或变量的一部分（比如结构体的一个字段、集合的一个元素）被引用了，那么就称其被借用了。
+
+在Rust的官方介绍书籍*The Rust Programming Language*中，借用检查机制总结如下：
+
+> 对于一个变量，在任一时刻，只可拥有一个可变引用或多个不可变引用，且两者不可共存。
+>
+> 所有引用都必须保持有效。
+
+首先,这意味着两个以上的可变引用不可以同时存在：
+
+```rust
+{
+    let mut x = 5;
+    let r1 = &mut x;
+    let r2 = &mut x;
+    println!("{}", r1);
+}
+```
+
+```
+error[E0499]: cannot borrow `x` as mutable more than once at a time
+ --> src\main.rs:4:14
+  |
+3 |     let r1 = &mut x;
+  |              ------ first mutable borrow occurs here
+4 |     let r2 = &mut x;
+  |              ^^^^^^ second mutable borrow occurs here
+5 |     println!("{}", r1);
+  |                    -- first borrow later used here
+```
+
+其次，可变引用和不可变引用也不可以同时存在：
+
+```rust
+{
+    let mut x = 5;
+    let r1 = &mut x;
+    let r2 = &x;
+    println!("{}", r1);
+}
+```
+
+```
+error[E0502]: cannot borrow `x` as immutable because it is also borrowed as mutable
+ --> src\main.rs:4:14
+  |
+3 |     let r1 = &mut x;
+  |              ------ mutable borrow occurs here
+4 |     let r2 = &x;
+  |              ^^ immutable borrow occurs here
+5 |     println!("{}", r1);
+  |                    -- mutable borrow later used here
+```
+
+这么规定的原因之一是为了防止”数据争用“问题。而且有意思的是，下面这样的代码也不会通过编译：
+
+```rust
+{
+    let mut v = vec![1, 2, 3, 4, 5];
+    let first = &v[0];
+    v.push(6);
+    println!("{}", first);
+}
+```
+
+```
+error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immutable
+ --> src\main.rs:4:5
+  |
+3 |     let first = &v[0];
+  |                  - immutable borrow occurs here
+4 |     v.push(6);
+  |     ^^^^^^^^^ mutable borrow occurs here
+5 |     println!("{}", first);
+  |                    ----- immutable borrow later used here
+```
+
+这是因为`vec`的`push`方法借用了一个它本身的可变引用：
+
+```rust
+pub fn push(&mut self, value: T) {...}
+```
+
+矢量的内存在增加元素后可能重新分配，从而导致不可变引用`first`失效。这一编译错误背后的道理，就是为了防止这种情况。
