@@ -264,33 +264,33 @@ error[E0502]: cannot borrow `s` as mutable because it is also borrowed as immuta
 
 ### Iterator Invalidation
 
-An even number eraser program might be implemented like this in C++:
+*Iterator invalidation* might present like this in C++:
 
 ```c++
 {
 	std::vector<int> v = { 1,2,3,4,5 };
 	for (auto it = v.begin(); it != v.end(); it++) {
 		if (*it % 2 == 0) {
-			v.erase(it); // it is invalid after this gets executed
+			v.push_back(*it); // 'it' is invalid after reallocation
 		}
 	}
 }
 ```
 
-C++ compiler doesn't have complains about this, the code will run straight into exceptions. If we replicate the program in Rust:
+Vector v is initialized to have a capacity of 5 and when inserted, the reallocation gets triggered which invalids the iterators. C++ compiler doesn't have complains about this, it will run straight into exceptions. If we replicate the program in Rust:
 
 ```rust
 {
     let mut v = vec![1, 2, 3, 4, 5];
     for n in v.iter_mut() {
         if *n % 2 == 0 {
-            v.remove_item(n);
+            v.push(*n);
         }
     }
 }
 ```
 
-However, it won't compile:
+However, the snippet won't compile:
 
 ```
 error[E0499]: cannot borrow `v` as mutable more than once at a time
@@ -302,7 +302,7 @@ error[E0499]: cannot borrow `v` as mutable more than once at a time
   |              first mutable borrow occurs here
   |              first borrow later used here
 4 |         if *n % 2 == 0 {
-5 |             v.remove_item(n);
+5 |             v.push(*n);
   |             ^ second mutable borrow occurs here
 ```
 
