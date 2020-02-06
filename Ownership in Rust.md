@@ -31,7 +31,7 @@ This behavior prohibits the *double free* problem mostly seen prior to smart poi
 
 ### Borrow Check
 
-In Rust, a value is borrowed if something else has a reference to it or into it (a reference to a field of a struct or to an element of a collection).
+In Rust, a value is borrowed if something else has a reference to it or into it (a reference to a field of a struct or an element of a collection).
 
 The borrow check mechanism in Rust is summarized in *the Book* as follow:
 
@@ -85,7 +85,7 @@ error[E0502]: cannot borrow `x` as immutable because it is also borrowed as muta
   |                    -- mutable borrow later used here
 ```
 
-These restrictions are casted to prevent *data races*. More interestingly, following code won't compile as well:
+One of the reasons these restrictions are cast is to prevent *data races*. More interestingly, the following code won't compile as well:
 
 ```rust
 {
@@ -108,13 +108,13 @@ error[E0502]: cannot borrow `v` as mutable because it is also borrowed as immuta
   |                    ----- immutable borrow later used here
 ```
 
-The undelaying cause is `push` method of `vec` takes a mutable reference of it:
+The undelaying cause is the method `push` of `vec` takes a mutable reference of it:
 
 ```rust
 pub fn push(&mut self, value: T) {...}
 ```
 
-Reason behind this error is that the memory of vector might get re-allocated after push operation which renders the immutable reference `first` invalid.
+The reason behind this error is that the memory of vector might get re-allocated after push operation which renders the immutable reference `first` invalid.
 
 ## Memory Safety in Rust
 
@@ -306,11 +306,11 @@ error[E0499]: cannot borrow `v` as mutable more than once at a time
   |             ^ second mutable borrow occurs here
 ```
 
-It's a violation to the 'only one mutable reference' rule, which effectively prohibits the *iterator invalidation* problem.
+It's a violation of the 'only one mutable reference' rule, which effectively prohibits the *iterator invalidation* problem.
 
 ### Buffer Overflow
 
-C doesn't really have the concept of an array. Everything is pointer at runtime.
+C doesn't really have the concept of an array. Everything is treated as pointers at runtime.
 
 ```C
 struct foo {
@@ -353,7 +353,69 @@ Though for `span` in C++, `at` is not provided, it often results in the necessit
 
 ### Data Race
 
+*Data races* happen when two or more threads concurrently access the same memory with at least one of them being a write operation. *Data races* may cause memory corruptions, which C++ doesn't particularly forbid:
 
+```c++
+{
+	int count = 0;
+	std::thread thread1([&count]() {count++;});
+	std::thread thread2([&count]() {std::cout << count << std::endl; });
+	thread1.join();
+	thread2.join();
+}
+```
+
+In this super simplified example, it is possible for `count` to be written and read at the same time. For the record, it is not hard to fix the *data race* issue in C++. Simply wraps shared data with atomic:
+
+```c++
+{
+	std::atomic<int> count = 0;
+	std::thread thread1([&count]() {count++;});
+	std::thread thread2([&count]() {std::cout << count << std::endl; });
+	thread1.join();
+	thread2.join();
+}
+```
+
+Still, we can take a look at the same scenario in Rust:
+
+```rust
+{
+    let mut count = 0;
+    let thread1 = thread::spawn(|| {
+        count = count + 1;
+    });
+    let thread2 = thread::spawn(|| {
+        println!("{}", count);
+    });
+    thread1.join().unwrap();
+    thread2.join().unwrap();
+}
+```
+
+Remember earlier I said borrow check can prevent *data races*? Turns out it's true:
+
+```
+error[E0502]: cannot borrow `count` as immutable because it is also borrowed as mutable
+ --> src\main.rs:6:33
+  |
+3 |       let thread1 = thread::spawn(|| {
+  |                     -             -- mutable borrow occurs here
+  |  ___________________|
+  | |
+4 | |         count = count + 1;
+  | |                 ----- first borrow occurs due to use of `count` in closure
+5 | |     });
+  | |______- argument requires that `count` is borrowed for `'static`
+6 |       let thread2 = thread::spawn(|| {
+  |                                   ^^ immutable borrow occurs here
+7 |           println!("{}", count);
+  |                          ----- second borrow occurs due to use of `count` in closure
+```
+
+The closure of `thread1` borrows a mutable reference of `count` because it alters the value. Second closure, that of `thread2`, automatically borrows an immutable reference of `count` because it reads the value, which essentially violates the borrow check rules by having mutable references and immutable references at the same time and thus is rejected by Rustc.
+
+Although *data races* are not hard to solve, I'd wage life in Rust is easier for letting compiler take care of it for you. One less potential for mistake is most of the time one less mistake for real.
 
 
 
