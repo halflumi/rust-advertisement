@@ -262,6 +262,52 @@ error[E0502]: cannot borrow `s` as mutable because it is also borrowed as immuta
    |                    ---- immutable borrow later used here
 ```
 
+### Iterator Invalidation
+
+An even number eraser program might be implemented like this in C++:
+
+```c++
+{
+	std::vector<int> v = { 1,2,3,4,5 };
+	for (auto it = v.begin(); it != v.end(); it++) {
+		if (*it % 2 == 0) {
+			v.erase(it); // it is invalid after this gets executed
+		}
+	}
+}
+```
+
+C++ compiler doesn't have complains about this, the code will run straight into exceptions. If we replicate the program in Rust:
+
+```rust
+{
+    let mut v = vec![1, 2, 3, 4, 5];
+    for n in v.iter_mut() {
+        if *n % 2 == 0 {
+            v.remove_item(n);
+        }
+    }
+}
+```
+
+However, it won't compile:
+
+```
+error[E0499]: cannot borrow `v` as mutable more than once at a time
+ --> src\main.rs:5:13
+  |
+3 |     for n in v.iter_mut() {
+  |              ------------
+  |              |
+  |              first mutable borrow occurs here
+  |              first borrow later used here
+4 |         if *n % 2 == 0 {
+5 |             v.remove_item(n);
+  |             ^ second mutable borrow occurs here
+```
+
+It's a violation to the 'only one mutable reference' rule, which effectively prohibits the *iterator invalidation* problem.
+
 ### Buffer Overflow
 
 C doesn't really have the concept of an array. Everything is pointer at runtime.
