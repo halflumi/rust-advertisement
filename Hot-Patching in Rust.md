@@ -1,6 +1,8 @@
-## Hot-Patching in Rust
-
 Is hot-patching supported by Rust? How does one hot-patch Rust programs? How is hot-patching in Rust compared to that in C/C++? These are the questions we're hopefully able to answer in this report.
+
+## Function Detour
+
+Hot-patching essentially consists of 3 steps: registering the new function, finding the address of the original function and patching the original function with the new function. The action of patching is often referred to as *function detour*. In order to validate the hot-patching in Rust, we must first implement *function detour* in Rust.
 
 ### Function Detour in C/C++
 
@@ -216,5 +218,84 @@ unsafe fn toggle(&self, enabled: bool) -> Result<()> {
 
 Thus crate `detour` should be taken into consideration when function detour is necessary in Rust.
 
+## Hot-Patching
+
+Now that we know Rust is capable of *function detour*,  we can continue to examine how hot-patching can be done in Rust.
+
+### Hot-Patching in C/C++
+
+In the context of a hot-patch, there are three components: the target process, the loader, and the patch itself. The most standard way to carry out the hot-patching task would be seen as following:
+
+- Make the patch that will be used for hot-patching. Most commonly this will be a modified(fixed) version of the function to patch with identical signature. Moreover, on Windows, the patch will be in form of a *.dll* file.
+- Use a loader to inject the hot-patch into the target process. The loader is a kind of general purpose program. Its task is to locate the target process load the patch into the memory of the process. How it functions largely depends on the OS.
+- Find the address of the function to patch in the target process. The address can be obtainable in a variety of ways depending on the OS. On extreme case it can also be manually hard-coded.
+- Detour the original function in replacement of the new function.
+
+Let's look at a minimal example of the whole process on Windows.
+
+For the record, we have a target program called *target.exe* which includes the function `EchoOncePerSecond`, that we want to patch:
+
+```c++
+void EchoOncePerSecond() {
+    std::cout << "Echo" << std::endl;
+}
+
+int main() {
+    while (1) {
+        EchoOncePerSecond();
+    }
+    return 0;
+}
+```
+
+To start, we write the hot-patch and call it as *patching-lib.dll*. It contains the new implementation of the original `EchoOncePerSecond`:
+
+```c++
+void PatchedPrintOncePerSecond() {
+	std::cout << "PrintOncePerSecond has been patched!" << std::endl;
+}
+
+BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
+{
+	if (dwReason == DLL_PROCESS_ATTACH) {
+		DWORD targetFuncAddress = (DWORD)GetModuleHandleA("target.exe") + 0x31C0;
+		detour((void*)targetFuncAddress, PatchedPrintOncePerSecond);
+	}
+	return TRUE;
+}
+```
+
+`0x31C0` is the offset of the function `EchoOncePerSecond` in *target.exe*. `detour` is exactly the same as demonstrated in the beginning.
+
+Then, the loader:
+
+```c++
+int main() {
+	LPCSTR dllFullPath = "C:\\injection\\bin\\patching-lib\\patching-lib.dll";
+	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, 12844);
+	LPVOID pDllPath = VirtualAllocEx(hProcess, 0, strlen(dllFullPath) + 1, MEM_COMMIT, PAGE_READWRITE);
+	WriteProcessMemory(hProcess, pDllPath, (LPVOID)dllFullPath, strlen(dllFullPath) + 1, 0);
+	HANDLE hLoadThread = CreateRemoteThread(hProcess, 0, 0,
+		(LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("Kernel32.dll"), "LoadLibraryA"), pDllPath, 0, 0);
+	WaitForSingleObject(hLoadThread, INFINITE);
+	VirtualFreeEx(hProcess, pDllPath, strlen(dllFullPath) + 1, MEM_RELEASE);
+	return 0;
+}
+```
+
+For the sake of simplicity, the full path of the patch and the pid of the target process are hard-coded into the loader. All the loader does is to allocate memory for the patch, copy the patch to the memory of the target process and make the process load the patch. Once the patch is loaded, `EchoOncePerSecond` gets patched to jump to `PatchedPrintOncePerSecond`. Output in the console would be something like this:
+
+```
+...
+Echo
+Echo
+PrintOncePerSecond has been patched!
+PrintOncePerSecond has been patched!
+...
+```
+
 ### Hot-Patching in Rust
 
+Now we've seen how hot-patching is carried out in C++ on Windows, it's not hard to observe that the hot-patching process isn't entirely bound to the programming language. In fact, the hot-patching shown above consists of a large portion of calls to system APIs, which Rust is perfectly capable of as we've discussed in the previous sections.
+
+(unfinished)
