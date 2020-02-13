@@ -1,4 +1,8 @@
-Is hot-patching supported by Rust? How does one hot-patch Rust programs? How is hot-patching in Rust compared to that in C/C++? These are the questions we're hopefully able to answer in this report.
+How is hot-patching supported in Rust?
+
+How is hot-patching in Rust compared to that in C/C++? 
+
+These are the questions we're hopefully able to answer in this report.
 
 ## Function Detour
 
@@ -50,7 +54,7 @@ Rust supports function address peeking through `usize` conversions. We can calcu
 
 ```rust
 fn caclPatchOffset(source: fn(), target: fn()) -> usize{
-	target as usize - source as usize - 5
+    target as usize - source as usize - 5
 }
 ```
 
@@ -58,7 +62,7 @@ Raw pointer manipulation is supported as well:
 
 ```rust
 fn detour(source: fn(), target: fn()) {
-	unsafe { *(source as *mut u8) = 0xE9; }
+    unsafe { *(source as *mut u8) = 0xE9; }
 }
 ```
 
@@ -68,12 +72,12 @@ Rust also has bindings to system APIs. For Windows API, `winapi` crate is provid
 use winapi;
 
 fn detour(source: fn(), target: fn()) {
-	winapi::um::memoryapi::VirtualProtect(
-	    source as winapi::um::winnt::PVOID,
-	    5 as winapi::shared::basetsd::SIZE_T,
-	    winapi::um::winnt::PAGE_EXECUTE_READWRITE,
-	    &mut originalProtect,
-	);
+    winapi::um::memoryapi::VirtualProtect(
+        source as winapi::um::winnt::PVOID,
+        5 as winapi::shared::basetsd::SIZE_T,
+        winapi::um::winnt::PAGE_EXECUTE_READWRITE,
+        &mut originalProtect,
+    );
 }
 ```
 
@@ -120,6 +124,26 @@ func1
 func2
 ```
 
+The direct translation works but it's not pretty. It turns out Rust actually has a crate named `detour` particularly designed for function detour purposes. Crate `detour` has a nice capsulation which makes the function detour logic less verbose:
+
+```rust
+use std::error::Error;
+use detour::GenericDetour;
+
+fn func1() { println!("func1") }
+fn func2() { println!("func2") }
+
+fn main() -> Result<(), Box<dyn Error>> {
+    func1();
+    let hook = unsafe { GenericDetour::<fn()>::new(func1, func2)? };
+    unsafe { hook.enable()? };
+    func1();
+    Ok(())
+}
+```
+
+It has recoverable mechanics and uses mutexes to rule race conditions. Crate `detour` should be taken into consideration when function detour is necessary in Rust.
+
 ### A Deeper Dive into The Function Detour in Rust
 
 The function detour in Rust works, but how? There is a catch I only found out after a deeper dive into the assembly later in the experiment.
@@ -157,7 +181,7 @@ The `main()` in the Rust example looks like this in assembly:
 008412EA | ret
 ```
 
-`func1` after `detour`:
+`func1` after `detour` is called:
 
 ```assembly
 008412A0 | jmp rust-winapi.8412F0
@@ -169,54 +193,24 @@ The `main()` in the Rust example looks like this in assembly:
 
 As we can see, `detour` changed the 5 bytes from `008412A0` to `008412A4` into a `jmp` instruction, which is a direct substitution to the function body of `func1`. This is the one of the oldest tricks in the book of function detours.
 
-However this particular type of function detour has multi-threaded issues and it just happens to be present in the example - original instruction `xor eax,eax` at `008412A4` gets cut in half, rendering it corrupted.
+However, this particular type of function detour has multi-threaded issues since it offers no guarantee for the atomicity of the three patched instructions from `008412A0` to `008412A4`.
 
-I carried out this investigation because I cannot find any Rustc arguments for hot-patchable function.  Thus to ensure multi-thread safety, we need to use mutex for function detours. Rust actually has a crate named `detour` particularly designed for this purpose. Crate `detour` has a nice capsulation which makes the function detour logic less verbose:
+Adding preserved NOP instructions is the most frequently used solution to problems `detour` exposes, commonly referred to as compiling functions to be patchable. Additionally, using a single NOP instruction with the length of 5 bytes is one of the methods to execute such compilation. If `func1` is compiled to be patchable using this method, it could be compiled to:
 
-```rust
-use std::error::Error;
-use detour::GenericDetour;
-
-fn func1() { println!("func1") }
-fn func2() { println!("func2") }
-
-fn main() -> Result<(), Box<dyn Error>> {
-    func1();
-    let hook = unsafe { GenericDetour::<fn()>::new(func1, func2)? };
-    unsafe { hook.enable()? };
-    func1();
-    Ok(())
-}
+```assembly
+008412A0 | nopl 8(%rax,%rax)
+008412A5 | push esi
+008412A6 | sub esp,30
+008412A9 | xor eax,eax
+008412AB | mov ecx,dword ptr ds:[85C1B8]
+008412B1 | mov edx,dword ptr ds:[85C1BC]
+........ | ...
+008412EA | ret
 ```
 
-It has recoverable mechanics and uses mutexes to ensure multi-thread safety:
+Now the 5 bytes to be replaced by the `jmp` instruction from `008412A0` to `008412A4` is a single instruction, which is guaranteed to be atomic, ruling out the multi-thread issues.
 
-```rust
-unsafe fn toggle(&self, enabled: bool) -> Result<()> {
-    let _guard = memory::POOL.lock().unwrap();
-
-    if self.enabled.load(Ordering::SeqCst) == enabled {
-      return Ok(());
-    }
-
-    // Runtime code is by default only read-execute
-    let _handle = {
-      let area = (*self.patcher.get()).area();
-      region::protect_with_handle(
-        area.as_ptr(),
-        area.len(),
-        region::Protection::ReadWriteExecute,
-      )
-    }?;
-
-    // Copy either the detour or the original bytes of the function
-    (*self.patcher.get()).toggle(enabled);
-    self.enabled.store(enabled, Ordering::SeqCst);
-    Ok(())
-}
-```
-
-Thus crate `detour` should be taken into consideration when function detour is necessary in Rust.
+I carried out this investigation because I couldn't find any Rustc arguments for hot-patchable functions. With that in the mix, there is indeed a missing piece of the puzzle in terms of the hot-patching support in Rust. Until Rustc supports compiling of hot-patchable functions, we may need to insert the NOP instructions manually or try to dig into the compiler to add a function attribute for it, though that's not in the range of this report.
 
 ## Hot-Patching
 
@@ -226,9 +220,9 @@ Now that we know Rust is capable of *function detour*,  we can continue to exami
 
 In the context of a hot-patch, there are three components: the target process, the loader, and the patch itself. The most standard way to carry out the hot-patching task would be seen as following:
 
-- Make the patch that will be used for hot-patching. Most commonly this will be a modified(fixed) version of the function to patch with identical signature. Moreover, on Windows, the patch will be in form of a *.dll* file.
-- Use a loader to inject the hot-patch into the target process. The loader is a kind of general purpose program. Its task is to locate the target process load the patch into the memory of the process. How it functions largely depends on the OS.
-- Find the address of the function to patch in the target process. The address can be obtainable in a variety of ways depending on the OS. On extreme case it can also be manually hard-coded.
+- Make the patch that will be used for hot-patching. Most commonly this will be a modified(fixed) version of the function to patch with identical signature. Moreover, on Windows, the patch will be in the form of a *.dll* file.
+- Use a loader to inject the hot-patch into the target process. The loader is a kind of general-purpose program. Its task is to locate the target process and load the patch into the memory of the process. How it functions largely depends on the OS.
+- Find the address of the function to patch in the target process. The address can be obtainable in a variety of ways depending on the OS. On the extreme case, it can also be manually hard-coded.
 - Detour the original function in replacement of the new function.
 
 Let's look at a minimal example of the whole process on Windows.
@@ -237,7 +231,9 @@ For the record, we have a target program called *target.exe* which includes the 
 
 ```c++
 void EchoOncePerSecond() {
+    using namespace std::chrono_literals;
     std::cout << "Echo" << std::endl;
+    std::this_thread::sleep_for(1s);
 }
 
 int main() {
@@ -251,14 +247,20 @@ int main() {
 To start, we write the hot-patch and call it as *patching-lib.dll*. It contains the new implementation of the original `EchoOncePerSecond`:
 
 ```c++
-void PatchedPrintOncePerSecond() {
+#include "detour.h"
+
+void PatchedPrintOncePerSecond()
+{
+	using namespace std::chrono_literals;
 	std::cout << "PrintOncePerSecond has been patched!" << std::endl;
+	std::this_thread::sleep_for(1s);
 }
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved)
 {
-	if (dwReason == DLL_PROCESS_ATTACH) {
-		DWORD targetFuncAddress = (DWORD)GetModuleHandleA("target.exe") + 0x31C0;
+	if (dwReason == DLL_PROCESS_ATTACH)
+	{
+		DWORD targetFuncAddress = (DWORD)GetModuleHandle(NULL) + 0x31C0;
 		detour((void*)targetFuncAddress, PatchedPrintOncePerSecond);
 	}
 	return TRUE;
@@ -271,15 +273,15 @@ Then, the loader:
 
 ```c++
 int main() {
-	LPCSTR dllFullPath = "C:\\injection\\bin\\patching-lib\\patching-lib.dll";
-	HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, 12844);
-	LPVOID pDllPath = VirtualAllocEx(hProcess, 0, strlen(dllFullPath) + 1, MEM_COMMIT, PAGE_READWRITE);
-	WriteProcessMemory(hProcess, pDllPath, (LPVOID)dllFullPath, strlen(dllFullPath) + 1, 0);
-	HANDLE hLoadThread = CreateRemoteThread(hProcess, 0, 0,
-		(LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("Kernel32.dll"), "LoadLibraryA"), pDllPath, 0, 0);
-	WaitForSingleObject(hLoadThread, INFINITE);
-	VirtualFreeEx(hProcess, pDllPath, strlen(dllFullPath) + 1, MEM_RELEASE);
-	return 0;
+    LPCSTR dllFullPath = "C:\\injection\\bin\\patching-lib\\patching-lib.dll";
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, 12844);
+    LPVOID pDllPath = VirtualAllocEx(hProcess, 0, strlen(dllFullPath) + 1, MEM_COMMIT, PAGE_READWRITE);
+    WriteProcessMemory(hProcess, pDllPath, (LPVOID)dllFullPath, strlen(dllFullPath) + 1, 0);
+    HANDLE hLoadThread = CreateRemoteThread(hProcess, 0, 0,
+        (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("Kernel32.dll"), "LoadLibraryA"), pDllPath, 0, 0);
+    WaitForSingleObject(hLoadThread, INFINITE);
+    VirtualFreeEx(hProcess, pDllPath, strlen(dllFullPath) + 1, MEM_RELEASE);
+    return 0;
 }
 ```
 
@@ -296,6 +298,84 @@ PrintOncePerSecond has been patched!
 
 ### Hot-Patching in Rust
 
-Now we've seen how hot-patching is carried out in C++ on Windows, it's not hard to observe that the hot-patching process isn't entirely bound to the programming language. In fact, the hot-patching shown above consists of a large portion of calls to system APIs, which Rust is perfectly capable of as we've discussed in the previous sections.
+Now we've seen how hot-patching is carried out in C++ on Windows, it's not hard to observe that the hot-patching process isn't entirely bound to the programming language. In fact, the hot-patching that is shown above consists of a large portion of calls to system APIs, which Rust is perfectly capable of as we've discussed in the previous sections.
 
-(unfinished)
+Let's quickly replicate the minimal example in Rust. First the target process:
+
+```Rust
+fn EchoOncePerSecond() {
+    println!("Echo");
+    std::thread::sleep(time::Duration::from_secs(1));
+}
+
+fn main() {
+    loop {
+        EchoOncePerSecond();
+    }
+}
+```
+
+Then the hot-patch:
+
+```Rust
+use std::{mem, ptr, time};
+use winapi::{ctypes::c_void, um::libloaderapi::GetModuleHandleA};
+
+fn PatchedPrintOncePerSecond() {
+    println!("PrintOncePerSecond has been patched and it's in Rust!");
+    std::thread::sleep(time::Duration::from_secs(1));
+}
+
+#[no_mangle]
+pub extern "stdcall" fn DllMain(module: u32, reason: u32, reserved: *mut c_void) {
+    match reason {
+        1 => patching(),
+        _ => (),
+    };
+}
+
+fn patching() {
+    let targetFunc = unsafe {
+        let targetFuncAddress = GetModuleHandleA(ptr::null()) as usize + 0x1120;
+        mem::transmute::<*const (), fn()>(targetFuncAddress as *const ())
+    };
+    detour(targetFunc, PatchedPrintOncePerSecond);
+}
+```
+
+Now we can re-use the loader in the C++ example, the whole hot-patch actually works like a charm:
+
+```
+...
+Echo
+PrintOncePerSecond has been patched and it's in Rust!
+PrintOncePerSecond has been patched and it's in Rust!
+...
+```
+
+As we can see, hot-patching in Rust doesn't have much of a difference from that in C++.
+
+Well, if we look closely we can spot that the function offset of the patch target `EchoOncePerSecond` has changed from `0x31C0` to `0x1120`. Though you would get the offset by probing the PDB file in both cases, that's not really different either.
+
+In the best-case scenario, it won't be necessary for us to lean so hard on probing the address of un-exported functions. If a function is designed to be patchable we would want to export it and also stops the function mangling. We have syntaxes like this in C++:
+
+```c++
+extern "C" void __declspec(dllexport) EchoOncePerSecond() {}
+```
+
+It is also entirely possible for Rust to declare such export:
+
+```Rust
+#[no_mangle]
+pub extern "C" fn EchoOncePerSecond() {}
+```
+
+## Conclusion
+
+How is hot-patching supported in Rust?
+
+It is fully supported other than the lack of patchable function compiler arguments.
+
+How is hot-patching in Rust compared to that in C/C++? 
+
+Almost identical. There are minor differences in terms of interacting with the system APIs but that's as far as the difference goes. The hot-patching procedure itself is the same.
