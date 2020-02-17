@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-It has recoverable mechanics and uses mutexes to rule race conditions. Crate `detour` should be taken into consideration when function detour is necessary in Rust.
+It has recoverable mechanics and uses mutexes to rule out race conditions. Crate `detour` should be taken into consideration when function detour is necessary in Rust.
 
 ### A Deeper Dive into The Function Detour in Rust
 
@@ -195,7 +195,7 @@ As we can see, `detour` changed the 5 bytes from `008412A0` to `008412A4` into a
 
 However, this particular type of function detour has multi-threaded issues since it offers no guarantee for the atomicity of the three patched instructions from `008412A0` to `008412A4`.
 
-Adding preserved NOP instructions is the most frequently used solution to problems `detour` exposes, commonly referred to as compiling functions to be patchable. Additionally, using a single NOP instruction with the length of 5 bytes is one of the methods to execute such compilation. If `func1` is compiled to be patchable using this method, it could be compiled to:
+Adding preserved NOP instructions is the most frequently used solution to problems `detour` exposes, commonly referred to as compiling functions to be patchable. Additionally, using a single NOP instruction with the length of 5 bytes is one of the methods to execute such compilation. If `func1` is compiled to be patchable using this method, it could look like this:
 
 ```assembly
 008412A0 | nopl 8(%rax,%rax)
@@ -208,7 +208,7 @@ Adding preserved NOP instructions is the most frequently used solution to proble
 008412EA | ret
 ```
 
-Now the 5 bytes to be replaced by the `jmp` instruction from `008412A0` to `008412A4` is a single instruction, which is guaranteed to be atomic, ruling out the multi-thread issues.
+Now the 5 bytes to be replaced by the `jmp` instruction from `008412A0` to `008412A4` is a single instruction, which is guaranteed to be atomic, ruling out the afore-mentioned multi-thread issues.
 
 I carried out this investigation because I couldn't find any Rustc arguments for hot-patchable functions. With that in the mix, there is indeed a missing piece of the puzzle in terms of the hot-patching support in Rust. Until Rustc supports compiling of hot-patchable functions, we may need to insert the NOP instructions manually or try to dig into the compiler to add a function attribute for it, though that's not in the range of this report.
 
@@ -218,12 +218,12 @@ Now that we know Rust is capable of *function detour*,  we can continue to exami
 
 ### Hot-Patching in C/C++
 
-In the context of a hot-patch, there are three components: the target process, the loader, and the patch itself. The most standard way to carry out the hot-patching task would be seen as following:
+In the context of a hot-patching process, there are three components: the target, the loader, and the patch itself. The most standard way to carry out the hot-patching task would be seen as following:
 
 - Make the patch that will be used for hot-patching. Most commonly this will be a modified(fixed) version of the function to patch with identical signature. Moreover, on Windows, the patch will be in the form of a *.dll* file.
 - Use a loader to inject the hot-patch into the target process. The loader is a kind of general-purpose program. Its task is to locate the target process and load the patch into the memory of the process. How it functions largely depends on the OS.
 - Find the address of the function to patch in the target process. The address can be obtainable in a variety of ways depending on the OS. On the extreme case, it can also be manually hard-coded.
-- Detour the original function in replacement of the new function.
+- Detour the original function to the new function.
 
 Let's look at a minimal example of the whole process on Windows.
 
@@ -355,9 +355,9 @@ PrintOncePerSecond has been patched and it's in Rust!
 
 As we can see, hot-patching in Rust doesn't have much of a difference from that in C++.
 
-Well, if we look closely we can spot that the function offset of the patch target `EchoOncePerSecond` has changed from `0x31C0` to `0x1120`. Though you would get the offset by probing the PDB file in both cases, that's not really different either.
+Well, if we look closely we can spot that the function offset of the patch target `EchoOncePerSecond` has changed from `0x31C0` to `0x1120`. Though you would get the offsets by probing the PDB file in both cases, there isn't really a difference either.
 
-In the best-case scenario, it won't be necessary for us to lean so hard on probing the address of un-exported functions. If a function is designed to be patchable we would want to export it and also stops the function mangling. We have syntaxes like this in C++:
+In the best-case scenario, it won't be necessary for us to lean so hard on probing the address of un-exported functions. If a function is designed to be patchable we would want to export it and turn off name mangling. We have syntaxes like this in C++:
 
 ```c++
 extern "C" void __declspec(dllexport) EchoOncePerSecond() {}
